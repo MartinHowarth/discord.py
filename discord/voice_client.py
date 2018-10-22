@@ -248,6 +248,11 @@ class VoiceClient:
     @asyncio.coroutine
     def connect(self):
         log.info('voice connection is connecting...')
+        try:
+            del self.secret_key
+        except AttributeError:
+            pass
+
         self.endpoint = self.endpoint.replace(':80', '')
         self.endpoint_ip = socket.gethostbyname(self.endpoint)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -271,14 +276,25 @@ class VoiceClient:
         """|coro|
         Reads from the voice websocket while connected.
         """
-        while self._connected.is_set():
+        while True:
             try:
                 yield from self.ws.poll_event()
-            except ConnectionClosed as e:
-                if e.code == 1000:
-                    break
-                else:
-                    raise
+            except (ConnectionClosed, asyncio.TimeoutError) as e:
+                if isinstance(e, ConnectionClosed):
+                    if e.code == 1000:
+                        yield from self.disconnect()
+                        break
+
+                retry = 0.5
+                log.exception('Disconnected from voice... Reconnecting in %.2fs.', retry)
+                self._connected.clear()
+                yield from asyncio.sleep(retry, loop=self.loop)
+                try:
+                    yield from self.connect()
+                except asyncio.TimeoutError:
+                    # at this point we've retried 5 times... let's continue the loop.
+                    log.warning('Could not connect to voice... Retrying...')
+                    continue
 
     @asyncio.coroutine
     def disconnect(self):
@@ -367,7 +383,7 @@ class VoiceClient:
 
         Basic usage: ::
 
-            voice = await client.join_voice_channel(channel)
+            voice = yield from client.join_voice_channel(channel)
             player = voice.create_ffmpeg_player('cool.mp3')
             player.start()
 
@@ -492,8 +508,8 @@ class VoiceClient:
 
         Basic usage: ::
 
-            voice = await client.join_voice_channel(channel)
-            player = await voice.create_ytdl_player('https://www.youtube.com/watch?v=d62TYemN6MQ')
+            voice = yield from client.join_voice_channel(channel)
+            player = yield from voice.create_ytdl_player('https://www.youtube.com/watch?v=d62TYemN6MQ')
             player.start()
 
         Parameters
